@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 
 from einops import rearrange
+from einops.layers.torch import Rearrange
 
 from x_transformer import Encoder
 
@@ -23,11 +24,19 @@ class EvolutionDirector(Module):
         self,
         dim_genome,
         population_size,
+        num_parents = 2,
         transformer: Encoder
     ):
         super().__init__()
 
         self.transformer = transformer
+
+        self.pred_crossover_mask = nn.Sequential(
+            Rearrange('parents ... d -> ... (parents d)'),
+            nn.Linear(num_parents * dim_genome, num_parents * dim_genome, bias = False),
+            Rearrange('... (parents d) -> parents ... d')
+            nn.Softmax(dim = 0)
+        )
 
     def forward(self, x):
         return x
