@@ -27,6 +27,10 @@ class EvolutionDirector(Module):
         num_parents = 2,
         transformer: Encoder
     ):
+        """
+        👋, if you are watching
+        """
+
         super().__init__()
 
         self.transformer = transformer
