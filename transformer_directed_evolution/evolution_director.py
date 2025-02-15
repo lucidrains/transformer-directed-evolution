@@ -35,6 +35,12 @@ class EvolutionDirector(Module):
 
         self.transformer = transformer
 
+        self.pred_mutation = nn.Sequential(
+            nn.Linear(dim_genome, dim_genome * 3, bias = False),  # predict either -1, 0., 1. (binary encoding)
+            Rearrange('... (d mutate) -> d mutate'),
+            nn.Softmax(dim = -1)
+        )
+
         self.pred_crossover_mask = nn.Sequential(
             Rearrange('parents ... d -> ... (parents d)'),
             nn.Linear(num_parents * dim_genome, num_parents * dim_genome, bias = False),
