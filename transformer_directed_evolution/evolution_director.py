@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import torch
+from torch import tensor
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 
+from einx import get_at
 from einops import rearrange
 from einops.layers.torch import Rearrange, Reduce
 
-from x_transformer import Encoder
+from x_transformers import Encoder
 
 # helper functions
 
@@ -17,6 +19,107 @@ def exists(v):
 def default(v, d):
     return v if exists(v) else d
 
+# the environment, which in this case, is a petri dish running genetic algorithm
+# start with the most basic toy task before going for TSP
+
+class ToyEnvironment(Module):
+    def __init__(
+        self,
+        goal = 'Attention is all you need',
+        population_size = 100,
+        mutation_rate = 0.05,
+        frac_fittest_survive = 0.25,
+        frac_tournament = 0.25
+    ):  
+        super().__init__()
+
+        gene_length = len(goal)
+        gene_midpoint = gene_length // 2
+        target_gene = self.encode(goal)
+
+        keep_fittest_len = int(population_size * frac_fittest_survive)
+        num_tournament_contenders = int(keep_fittest_len * frac_tournament)
+        num_children = population_size - keep_fittest_len
+        num_mutate = mutation_rate * gene_length
+
+        assert num_tournament_contenders >= 2
+
+        self.gene_midpoint = gene_midpoint
+        self.target_gene = target_gene
+        self.keep_fittest_len = keep_fittest_len
+        self.num_tournament_contenders = num_tournament_contenders
+        self.num_children = num_children
+        self.num_mutate = num_mutate
+
+        self.register_buffer('generation', tensor(0))
+        self.register_buffer('gene_pool', torch.randint(0, 255, (population_size, gene_length)))
+
+    def encode(self, s):
+        return torch.tensor([ord(c) for c in s])
+
+    def decode(self, t):
+        return ''.join([chr(i) for i in t.tolist()])
+
+    def forward(
+        self,
+        display = False,
+        crossover_mask = None
+    ):
+
+        pool = self.gene_pool
+
+        # sort population by fitness
+
+        fitnesses = 1. / torch.square(pool - self.target_gene).sum(dim = -1)
+
+        indices = fitnesses.sort(descending = True).indices
+        pool, fitnesses = pool[indices], fitnesses[indices]
+
+        # keep the fittest
+
+        pool, fitnesses = pool[:self.keep_fittest_len], fitnesses[:self.keep_fittest_len]
+
+        # display every generation
+
+        if display:
+            for gene, fitness in zip(pool, fitnesses):
+                print(f"{self.decode(gene)} ({fitness.item():.3f})")
+
+        # solved if any fitness is inf
+
+        if (fitnesses == float('inf')).any():
+            return True
+
+        # deterministic tournament selection - let top 2 winners become parents
+
+        contender_ids = torch.randn((self.num_children, self.keep_fittest_len)).argsort(dim = -1)[..., :self.num_tournament_contenders]
+        participants, tournaments = pool[contender_ids], fitnesses[contender_ids]
+        top2_winners = tournaments.topk(2, dim = -1, largest = True, sorted = False).indices
+        parents = get_at('p [t] g, p w -> p w g', participants, top2_winners)
+
+        # cross over recombination of parents
+
+        parent1, parent2 = parents.unbind(dim = 1)
+
+        if not exists(crossover_mask):
+            crossover_mask = torch.randint(0, 2, parent1.shape).bool()
+
+        children = torch.where(crossover_mask, parent1, parent2)
+
+        pool = torch.cat((pool, children))
+
+        # mutate genes in population
+
+        mutate_mask = torch.randn(pool.shape).argsort(dim = -1) < self.num_mutate
+        noise = torch.randint(0, 2, pool.shape) * 2 - 1
+        pool = torch.where(mutate_mask, pool + noise, pool)
+        pool.clamp_(0, 255)
+
+        self.gene_pool.copy_(pool)
+        self.generation.add_(1)
+
+        return False
+
 # main class
 
 class EvolutionDirector(Module):
@@ -25,8 +128,8 @@ class EvolutionDirector(Module):
         dim_genome,
         dim,
         population_size,
+        transformer: Encoder,
         num_parents = 2,
-        transformer: Encoder
     ):
         """
         👋, if you are watching
@@ -49,7 +152,7 @@ class EvolutionDirector(Module):
         self.pred_crossover_mask = nn.Sequential(
             Rearrange('parents ... d -> ... (parents d)'),
             nn.Linear(num_parents * dim_genome + dim, num_parents * dim_genome, bias = False),
-            Rearrange('... (parents d) -> parents ... d')
+            Rearrange('... (parents d) -> parents ... d'),
             nn.Softmax(dim = 0)
         )
 
