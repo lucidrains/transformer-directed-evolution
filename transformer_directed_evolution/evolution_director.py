@@ -5,8 +5,7 @@ from torch import tensor
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 
-from einx import get_at
-from einops import rearrange
+from einops import rearrange, repeat
 from einops.layers.torch import Rearrange, Reduce
 
 from x_transformers import Encoder
@@ -99,7 +98,11 @@ class ToyEnvironment(Module):
         contender_ids = torch.randn((self.num_children, self.keep_fittest_len)).argsort(dim = -1)[..., :self.num_tournament_contenders]
         participants, tournaments = pool[contender_ids], fitnesses[contender_ids]
         top2_winners = tournaments.topk(2, dim = -1, largest = True, sorted = False).indices
-        parents = get_at('p [t] g, p w -> p w g', participants, top2_winners)
+
+        # parents = get_at('p [t] g, p w -> p w g', participants, top2_winners)
+
+        top2_winners = repeat(top2_winners, 'p w -> p w g', g = participants.shape[-1])
+        parents = participants.gather(1, top2_winners)
 
         # cross over recombination of parents
 
