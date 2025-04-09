@@ -44,6 +44,7 @@ class ToyEnvironment(Module):
 
         assert num_tournament_contenders >= 2
 
+        self.gene_length = gene_length
         self.gene_midpoint = gene_midpoint
         self.target_gene = target_gene
         self.keep_fittest_len = keep_fittest_len
@@ -63,7 +64,9 @@ class ToyEnvironment(Module):
     def forward(
         self,
         display = False,
-        crossover_mask = None
+        crossover_mask = None,
+        mutation_rate = None,
+        mutation_strength = 0.5
     ):
 
         pool = self.gene_pool
@@ -110,8 +113,16 @@ class ToyEnvironment(Module):
 
         # mutate genes in population
 
-        mutate_mask = torch.randn(pool.shape).argsort(dim = -1) < self.num_mutate
-        noise = torch.randint(0, 2, pool.shape) * 2 - 1
+        num_mutate = self.num_mutate
+
+        if exists(mutation_rate):
+            num_mutate = mutation_rate * self.gene_length
+
+        # mutate
+
+        mutate_mask = torch.randn(pool.shape).argsort(dim = -1) < num_mutate
+
+        noise = (torch.rand(pool.shape) < mutation_strength) * 2 - 1
         pool = torch.where(mutate_mask, pool + noise, pool)
         pool.clamp_(0, 255)
 
