@@ -46,12 +46,12 @@ class ToyEnvironment(Module):
 
         self.gene_length = gene_length
         self.gene_midpoint = gene_midpoint
-        self.target_gene = target_gene
         self.keep_fittest_len = keep_fittest_len
         self.num_tournament_contenders = num_tournament_contenders
         self.num_children = num_children
         self.num_mutate = num_mutate
 
+        self.register_buffer('target_gene', target_gene)
         self.register_buffer('generation', tensor(0))
         self.register_buffer('gene_pool', torch.randint(0, 255, (population_size, gene_length)))
 
@@ -68,6 +68,7 @@ class ToyEnvironment(Module):
         mutation_rate = None,
         mutation_strength = 0.5
     ):
+        device = self.target_gene.device
 
         pool = self.gene_pool
 
@@ -105,7 +106,7 @@ class ToyEnvironment(Module):
         parent1, parent2 = parents.unbind(dim = 1)
 
         if not exists(crossover_mask):
-            crossover_mask = torch.randint(0, 2, parent1.shape).bool()
+            crossover_mask = torch.randint(0, 2, parent1.shape, device = device).bool()
 
         children = torch.where(crossover_mask, parent1, parent2)
 
@@ -120,9 +121,9 @@ class ToyEnvironment(Module):
 
         # mutate
 
-        mutate_mask = torch.randn(pool.shape).argsort(dim = -1) < num_mutate
+        mutate_mask = torch.randn(pool.shape, device = device).argsort(dim = -1) < num_mutate
 
-        noise = (torch.rand(pool.shape) < mutation_strength) * 2 - 1
+        noise = (torch.rand(pool.shape, device = device) < mutation_strength) * 2 - 1
         pool = torch.where(mutate_mask, pool + noise, pool)
         pool.clamp_(0, 255)
 
