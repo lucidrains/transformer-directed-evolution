@@ -53,12 +53,21 @@ class ToyGeneticAlgorithmEnv(Module):
         self.register_buffer('target_gene', target_gene)
         self.register_buffer('generation', tensor(0))
         self.register_buffer('gene_pool', torch.randint(0, 255, (population_size, gene_length)))
+        self.register_buffer('done', tensor(False))
 
     def encode(self, s):
         return torch.tensor([ord(c) for c in s])
 
     def decode(self, t):
         return ''.join([chr(i) for i in t.tolist()])
+
+    def to_environment_generator(self):
+        actions = yield self.gene_pool
+
+        while not self.done.item():
+            done, fitnesses = self.forward(**actions)
+
+            actions = yield self.gene_pool, fitnesses, done
 
     def forward(
         self,
@@ -91,7 +100,8 @@ class ToyGeneticAlgorithmEnv(Module):
         # solved if any fitness is inf
 
         if (fitnesses == float('inf')).any():
-            return True
+            self.done.copy_(tensor(True))
+            return True, fitnesses
 
         # deterministic tournament selection - let top 2 winners become parents
 
@@ -133,7 +143,7 @@ class ToyGeneticAlgorithmEnv(Module):
         self.gene_pool.copy_(pool)
         self.generation.add_(1)
 
-        return False
+        return True, fitnesses
 
 # main class
 
