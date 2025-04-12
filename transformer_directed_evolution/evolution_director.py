@@ -64,7 +64,9 @@ class ToyGeneticAlgorithmEnv(Module):
     def to_environment_generator(self):
         actions = yield self.gene_pool
 
-        while not self.done.item():
+        done = self.done.item()
+
+        while not done:
             done, fitnesses = self.forward(**actions)
 
             actions = yield self.gene_pool, fitnesses, done
