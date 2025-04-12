@@ -21,7 +21,7 @@ def default(v, d):
 # the environment, which in this case, is a petri dish running genetic algorithm
 # start with the most basic toy task before going for TSP
 
-class ToyEnvironment(Module):
+class ToyGeneticAlgorithmEnv(Module):
     def __init__(
         self,
         goal = 'Attention is all you need',
@@ -158,10 +158,23 @@ class EvolutionDirector(Module):
 
         self.pool = Reduce('b n d -> b d', 'mean')
 
+        self.pred_interfere_mutation = nn.Linear(
+            nn.Linear(dim_genome + dim, 1, bias = False),
+            Rearrange('... 1 -> ...'),
+            nn.Sigmoid()
+        )
+
         self.pred_mutation = nn.Sequential(
             nn.Linear(dim_genome + dim, dim_genome * 3, bias = False),  # predict either -1, 0., 1. (binary encoding)
             Rearrange('... (d mutate) -> d mutate'),
             nn.Softmax(dim = -1)
+        )
+
+        self.pred_interfere_crossover = nn.Linear(
+            Rearrange('parents ... d -> ... (parents d)'),
+            nn.Linear(num_parents * dim_genome + dim, 1, bias = False),
+            Rearrange('... 1 -> ...'),
+            nn.Sigmoid()
         )
 
         self.pred_crossover_mask = nn.Sequential(
