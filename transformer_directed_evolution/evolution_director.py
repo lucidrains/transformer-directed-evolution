@@ -67,6 +67,8 @@ class ToyGeneticAlgorithmEnv(Module):
         done = self.done.item()
 
         while not done:
+            actions = default(actions, dict(display = True))
+
             done, fitnesses = self.forward(**actions)
 
             actions = yield self.gene_pool, fitnesses, done
@@ -145,7 +147,7 @@ class ToyGeneticAlgorithmEnv(Module):
         self.gene_pool.copy_(pool)
         self.generation.add_(1)
 
-        return True, fitnesses
+        return False, fitnesses
 
 # main class
 
@@ -207,3 +209,17 @@ class EvolutionDirector(Module):
         # concat the pooled embed for the evolution director to make a decision on crossover mask or mutation
 
         return x
+
+# quick test
+
+if __name__ == '__main__':
+    toy = ToyGeneticAlgorithmEnv()
+
+    gen = toy.to_environment_generator()
+
+    state = next(gen)
+
+    done = False
+
+    while not done:
+        state, _, done = gen.send(None)
