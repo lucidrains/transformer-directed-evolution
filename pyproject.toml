@@ -34,14 +34,17 @@ Homepage = "https://pypi.org/project/transformer-directed-evolution/"
 Repository = "https://github.com/lucidrains/transformer-directed-evolution"
 
 [project.optional-dependencies]
-examples = []
+examples = [
+    "tqdm",
+    "wandb",
+]
 test = [
     "pytest"
 ]
 
 [tool.pytest.ini_options]
 pythonpath = [
-  "."
+    "."
 ]
 
 [build-system]
