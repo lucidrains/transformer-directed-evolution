@@ -23,7 +23,7 @@ classifiers=[
     'Programming Language :: Python :: 3.9',
 ]
 
-dependencies = [
+dependencies = [    
     "einops>=0.8.0",
     "torch>=2.0",
     "x-transformers>=2.0.0"

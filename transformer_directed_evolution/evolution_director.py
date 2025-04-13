@@ -18,6 +18,9 @@ def exists(v):
 def default(v, d):
     return v if exists(v) else d
 
+def log(t, eps = 1e-20):
+    return t.clamp(min = eps).log()
+
 # the environment, which in this case, is a petri dish running genetic algorithm
 # start with the most basic toy task before going for TSP
 
@@ -201,8 +204,34 @@ class EvolutionDirector(Module):
             nn.Softmax(dim = 0)
         )
 
-    def forward(self, genome_pool):
+    def actor_loss(
+        logits,
+        old_log_probs,
+        actions,
+        normalized_rewards,
+        eps_clip = 0.2,
+        entropy_weight = .01,
+    ):
+        log_probs = logits.gather(-1, actions)
 
+        ratio = (log_probs - old_log_probs).exp()
+
+        # classic clipped surrogate loss from ppo
+
+        clipped_ratio = ratio.clamp(min = 1. - eps_clip, max = 1. + eps_clip)
+
+        actor_loss = -torch.min(clipped_ratio * normalized_rewards, ratio * normalized_rewards)
+
+        # add entropy loss for exploration
+
+        prob = logits.softmax(dim = -1)
+        entropy = -(prob * log(prob)).sum(dim = -1)
+
+        entropy_aux_loss = -entropy_weight * entropy
+
+        return actor_loss + entropy_aux_loss
+
+    def forward(self, genome_pool):
 
         genome_pool = rearrange(genome_pool, '... -> 1 ...')
 
