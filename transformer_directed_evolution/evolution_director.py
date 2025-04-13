@@ -155,8 +155,7 @@ class EvolutionDirector(Module):
     def __init__(
         self,
         dim_genome,
-        dim,
-        population_size,
+        dim = 64,
         transformer: Encoder,
         num_parents = 2,
     ):
@@ -213,7 +212,10 @@ class EvolutionDirector(Module):
 # quick test
 
 if __name__ == '__main__':
+
     toy = ToyGeneticAlgorithmEnv()
+
+    god = EvolutionDirector(toy.gene_length)
 
     gen = toy.to_environment_generator()
 
@@ -222,4 +224,6 @@ if __name__ == '__main__':
     done = False
 
     while not done:
-        state, _, done = gen.send(None)
+        actions = god(state)
+
+        state, _, done = gen.send(actions)
