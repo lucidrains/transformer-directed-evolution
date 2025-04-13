@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from torch import tensor
+from torch import nn, tensor
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 
@@ -155,8 +155,7 @@ class EvolutionDirector(Module):
     def __init__(
         self,
         dim_genome,
-        dim = 64,
-        transformer: Encoder,
+        transformer: Encoder | dict,
         num_parents = 2,
     ):
         """
@@ -165,13 +164,18 @@ class EvolutionDirector(Module):
 
         super().__init__()
 
+        if isinstance(transformer, dict):
+            transformer = Encoder(**transformer)
+
+        dim = transformer.dim
+
         self.proj_genome_to_model = nn.Linear(dim_genome, dim)
 
         self.transformer = transformer
 
         self.pool = Reduce('b n d -> b d', 'mean')
 
-        self.pred_interfere_mutation = nn.Linear(
+        self.pred_interfere_mutation = nn.Sequential(
             nn.Linear(dim_genome + dim, 1, bias = False),
             Rearrange('... 1 -> ...'),
             nn.Sigmoid()
@@ -179,11 +183,11 @@ class EvolutionDirector(Module):
 
         self.pred_mutation = nn.Sequential(
             nn.Linear(dim_genome + dim, dim_genome * 3, bias = False),  # predict either -1, 0., 1. (binary encoding)
-            Rearrange('... (d mutate) -> d mutate'),
+            Rearrange('... (d mutate) -> ... d mutate', mutate = dim_genome),
             nn.Softmax(dim = -1)
         )
 
-        self.pred_interfere_crossover = nn.Linear(
+        self.pred_interfere_crossover = nn.Sequential(
             Rearrange('parents ... d -> ... (parents d)'),
             nn.Linear(num_parents * dim_genome + dim, 1, bias = False),
             Rearrange('... 1 -> ...'),
@@ -193,21 +197,31 @@ class EvolutionDirector(Module):
         self.pred_crossover_mask = nn.Sequential(
             Rearrange('parents ... d -> ... (parents d)'),
             nn.Linear(num_parents * dim_genome + dim, num_parents * dim_genome, bias = False),
-            Rearrange('... (parents d) -> parents ... d'),
+            Rearrange('... (parents d) -> parents ... d', parents = num_parents),
             nn.Softmax(dim = 0)
         )
 
     def forward(self, genome_pool):
 
-        tokens = self.proj_genome_to_model(genome_pool)
+
+        genome_pool = rearrange(genome_pool, '... -> 1 ...')
+
+        tokens = self.proj_genome_to_model(genome_pool.float())
 
         attended_population = self.transformer(tokens)
 
-        pooled_population_embed = self.pool(attended_population)
+        pool_stats_embed = self.pool(attended_population)
 
         # concat the pooled embed for the evolution director to make a decision on crossover mask or mutation
 
-        return x
+        pred_crossover_mask = self.pred_crossover_mask(pool_stats_embed)
+
+        pred_mutate_rate = self.pred_mutate_rate(pool_stats_embed)
+
+        return dict(
+            crossover_mask = pred_crossover_mask,
+            mutation_rate = pred_mutate_rate
+        )
 
 # quick test
 
