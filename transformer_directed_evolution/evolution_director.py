@@ -204,11 +204,27 @@ class EvolutionDirector(Module):
             nn.Softmax(dim = 0)
         )
 
+        self.pred_value = nn.Sequential(
+            Rearrange('parents ... d -> ... (parents d)'),
+            nn.Linear(num_parents * dim_genome + dim, 1, bias = False),
+            Rearrange('... 1 -> ...')
+        )
+
+    def critic_loss(
+        self,
+        advantages,
+        values,
+        rewards
+    ):
+        rewards = advantages + values
+        return F.mse_loss(values, rewards)
+
     def actor_loss(
+        self,
         logits,
         old_log_probs,
         actions,
-        normalized_rewards,
+        advantages,
         eps_clip = 0.2,
         entropy_weight = .01,
     ):
@@ -220,7 +236,7 @@ class EvolutionDirector(Module):
 
         clipped_ratio = ratio.clamp(min = 1. - eps_clip, max = 1. + eps_clip)
 
-        actor_loss = -torch.min(clipped_ratio * normalized_rewards, ratio * normalized_rewards)
+        actor_loss = -torch.min(clipped_ratio * advantages, ratio * advantages)
 
         # add entropy loss for exploration
 
