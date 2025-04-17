@@ -25,6 +25,7 @@ classifiers=[
 
 dependencies = [    
     "einops>=0.8.0",
+    "evolutionary-policy-optimization>=0.0.29",
     "torch>=2.0",
     "x-transformers>=2.0.0"
 ]

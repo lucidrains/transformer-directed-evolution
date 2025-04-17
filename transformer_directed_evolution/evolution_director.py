@@ -10,6 +10,8 @@ from einops.layers.torch import Rearrange, Reduce
 
 from x_transformers import Encoder
 
+from evolutionary_policy_optimization import LatentGenePool
+
 # helper functions
 
 def exists(v):
