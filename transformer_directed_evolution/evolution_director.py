@@ -247,7 +247,7 @@ class EvolutionDirector(Module):
 
         entropy_aux_loss = -entropy_weight * entropy
 
-        return actor_loss + entropy_aux_loss
+        return (actor_loss + entropy_aux_loss).mean()
 
     def forward(self, genome_pool):
 
@@ -276,7 +276,9 @@ if __name__ == '__main__':
 
     toy = ToyGeneticAlgorithmEnv()
 
-    god = EvolutionDirector(toy.gene_length)
+    transformer = Encoder(dim = 32, depth = 2)
+
+    god = EvolutionDirector(toy.gene_length, transformer)
 
     gen = toy.to_environment_generator()
 
