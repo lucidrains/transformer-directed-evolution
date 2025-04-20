@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from torch import nn, tensor
+from torch import nn, tensor, cat
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 
@@ -11,6 +11,8 @@ from einops.layers.torch import Rearrange, Reduce
 from x_transformers import Encoder
 
 from evolutionary_policy_optimization import LatentGenePool
+
+from tqdm import tqdm
 
 # helper functions
 
@@ -33,7 +35,8 @@ class ToyGeneticAlgorithmEnv(Module):
         population_size = 100,
         mutation_rate = 0.05,
         frac_fittest_survive = 0.25,
-        frac_tournament = 0.25
+        frac_tournament = 0.25,
+        display = False
     ):  
         super().__init__()
 
@@ -54,11 +57,24 @@ class ToyGeneticAlgorithmEnv(Module):
         self.num_tournament_contenders = num_tournament_contenders
         self.num_children = num_children
         self.num_mutate = num_mutate
+        self.population_size = population_size
+
+        self.display = display
 
         self.register_buffer('target_gene', target_gene)
-        self.register_buffer('generation', tensor(0))
-        self.register_buffer('gene_pool', torch.randint(0, 255, (population_size, gene_length)))
-        self.register_buffer('done', tensor(False))
+
+        self.reset()
+
+    @property
+    def device(self):
+        return self.target_gene.device
+
+    def reset(self):
+        self.register_buffer('initted', tensor(False, device = self.device))
+        self.register_buffer('generation', tensor(0, device = self.device))
+        self.register_buffer('parent_ids', torch.zeros((self.num_children, 2), device = self.device, dtype = torch.long))
+        self.register_buffer('gene_pool', torch.randint(0, 255, (self.population_size, self.gene_length), device = self.device))
+        self.register_buffer('done', tensor(False, device = self.device))
 
     def encode(self, s):
         return torch.tensor([ord(c) for c in s])
@@ -67,27 +83,98 @@ class ToyGeneticAlgorithmEnv(Module):
         return ''.join([chr(i) for i in t.tolist()])
 
     def to_environment_generator(self):
-        actions = yield self.gene_pool
+        actions = yield self.gene_pool, self.parent_ids
 
         done = self.done.item()
 
         while not done:
-            actions = default(actions, dict(display = True))
+            actions = default(actions, dict(display = self.display))
 
             done, fitnesses = self.forward(**actions)
 
-            actions = yield self.gene_pool, fitnesses, done
+            actions = yield self.gene_pool, self.parent_ids, fitnesses, done
+
+    def run(
+        self,
+        num_trials = 1,
+        *,
+        intervener: EvolutionDirector | None = None,
+        display = None
+    ):
+        display = default(display, self.display)
+
+        generation_completed_at = []
+
+        for _ in tqdm(range(num_trials)):
+            self.reset()
+
+            gen = self.to_environment_generator()
+
+            state, parent_ids = next(gen)
+
+            done = False
+
+            while not done:
+
+                actions = dict(display = display)
+
+                if exists(intervener):
+                    intervention_actions = intervener(state, parent_ids)
+                    actions.update(**intervention_actions)
+
+                state, parent_ids, _, done = gen.send(actions)
+
+            generation_completed_at.append(self.generation.item())
+
+        return tensor(generation_completed_at, device = self.device)
 
     def forward(
         self,
-        display = False,
+        display = None,
         crossover_mask = None,
         mutation_rate = None,
         mutation_strength = 0.5
     ):
+        display = default(display, self.display)
         device = self.target_gene.device
 
+        # get the gene pool
+
         pool = self.gene_pool
+
+        # if initted, carry out the crossover and mutation, taking into account any actions passed in
+
+        if self.initted:
+            parents = pool[self.parent_ids]
+
+            # cross over recombination of parents
+
+            parent1, parent2 = parents.unbind(dim = 1)
+
+            if not exists(crossover_mask):
+                crossover_mask = torch.randint(0, 2, parent1.shape, device = device).bool()
+
+            children = torch.where(crossover_mask, parent1, parent2)
+
+            pool = torch.cat((pool, children))
+
+            # mutate genes in population
+
+            num_mutate = self.num_mutate
+
+            if exists(mutation_rate):
+                num_mutate = mutation_rate * self.gene_length
+
+            # mutate
+
+            mutate_mask = torch.randn(pool.shape, device = device).argsort(dim = -1) < num_mutate
+
+            noise = (torch.rand(pool.shape, device = device) < mutation_strength) * 2 - 1
+            pool = torch.where(mutate_mask, pool + noise, pool)
+            pool.clamp_(0, 255)
+
+            self.register_buffer('gene_pool', pool)
+            self.generation.add_(1)
 
         # sort population by fitness
 
@@ -114,43 +201,17 @@ class ToyGeneticAlgorithmEnv(Module):
 
         # deterministic tournament selection - let top 2 winners become parents
 
-        contender_ids = torch.randn((self.num_children, self.keep_fittest_len)).argsort(dim = -1)[..., :self.num_tournament_contenders]
-        participants, tournaments = pool[contender_ids], fitnesses[contender_ids]
-        top2_winners = tournaments.topk(2, dim = -1, largest = True, sorted = False).indices
+        contender_ids = torch.randn((self.num_children, self.keep_fittest_len), device = self.device).argsort(dim = -1)[..., :self.num_tournament_contenders]
+        tournaments = fitnesses[contender_ids]
+        top2_tournament_indices = tournaments.topk(2, dim = -1, largest = True, sorted = False).indices
 
-        # parents = get_at('p [t] g, p w -> p w g', participants, top2_winners)
+        top2_contender_ids = contender_ids.gather(-1, top2_tournament_indices)
 
-        top2_winners = repeat(top2_winners, 'p w -> p w g', g = participants.shape[-1])
-        parents = participants.gather(1, top2_winners)
+        self.register_buffer('gene_pool', pool)
+        self.parent_ids.copy_(top2_contender_ids)
 
-        # cross over recombination of parents
-
-        parent1, parent2 = parents.unbind(dim = 1)
-
-        if not exists(crossover_mask):
-            crossover_mask = torch.randint(0, 2, parent1.shape, device = device).bool()
-
-        children = torch.where(crossover_mask, parent1, parent2)
-
-        pool = torch.cat((pool, children))
-
-        # mutate genes in population
-
-        num_mutate = self.num_mutate
-
-        if exists(mutation_rate):
-            num_mutate = mutation_rate * self.gene_length
-
-        # mutate
-
-        mutate_mask = torch.randn(pool.shape, device = device).argsort(dim = -1) < num_mutate
-
-        noise = (torch.rand(pool.shape, device = device) < mutation_strength) * 2 - 1
-        pool = torch.where(mutate_mask, pool + noise, pool)
-        pool.clamp_(0, 255)
-
-        self.gene_pool.copy_(pool)
-        self.generation.add_(1)
+        if not self.initted:
+            self.initted.copy_(tensor(True, device = self.device))
 
         return False, fitnesses
 
@@ -161,7 +222,8 @@ class EvolutionDirector(Module):
         self,
         dim_genome,
         transformer: Encoder | dict,
-        num_parents = 2,
+        mutation_rate_bins = 25,
+        max_mutation_rate = 0.2
     ):
         """
         👋, if you are watching
@@ -187,28 +249,28 @@ class EvolutionDirector(Module):
         )
 
         self.pred_mutation = nn.Sequential(
-            nn.Linear(dim_genome + dim, dim_genome * 3, bias = False),  # predict either -1, 0., 1. (binary encoding)
-            Rearrange('... (d mutate) -> ... d mutate', mutate = dim_genome),
+            nn.Linear(dim, mutation_rate_bins, bias = False),  # predict either -1, 0., 1. (binary encoding)
             nn.Softmax(dim = -1)
         )
 
+        self.mutation_rate_bins = mutation_rate_bins
+        self.max_mutation_rate = max_mutation_rate
+
         self.pred_interfere_crossover = nn.Sequential(
             Rearrange('parents ... d -> ... (parents d)'),
-            nn.Linear(num_parents * dim_genome + dim, 1, bias = False),
+            nn.Linear(2 * dim_genome + dim, 1, bias = False),
             Rearrange('... 1 -> ...'),
             nn.Sigmoid()
         )
 
         self.pred_crossover_mask = nn.Sequential(
-            Rearrange('parents ... d -> ... (parents d)'),
-            nn.Linear(num_parents * dim_genome + dim, num_parents * dim_genome, bias = False),
-            Rearrange('... (parents d) -> parents ... d', parents = num_parents),
-            nn.Softmax(dim = 0)
+            nn.Linear(2 * dim_genome + dim, dim_genome, bias = False),
+            nn.Sigmoid()
         )
 
         self.pred_value = nn.Sequential(
             Rearrange('parents ... d -> ... (parents d)'),
-            nn.Linear(num_parents * dim_genome + dim, 1, bias = False),
+            nn.Linear(2 * dim_genome + dim, 1, bias = False),
             Rearrange('... 1 -> ...')
         )
 
@@ -249,8 +311,12 @@ class EvolutionDirector(Module):
 
         return (actor_loss + entropy_aux_loss).mean()
 
-    def forward(self, genome_pool):
-
+    def forward(
+        self,
+        genome_pool,
+        parent_ids
+    ):
+        parents = genome_pool[parent_ids]
         genome_pool = rearrange(genome_pool, '... -> 1 ...')
 
         tokens = self.proj_genome_to_model(genome_pool.float())
@@ -261,32 +327,41 @@ class EvolutionDirector(Module):
 
         # concat the pooled embed for the evolution director to make a decision on crossover mask or mutation
 
-        pred_crossover_mask = self.pred_crossover_mask(pool_stats_embed)
+        pred_mutation_rate_bins = self.pred_mutation(pool_stats_embed)
 
-        pred_mutate_rate = self.pred_mutate_rate(pool_stats_embed)
+        crossover_mask_input = rearrange(parents, 'b parents d -> b (parents d)')
+
+        repeated_pool_stats_embed = repeat(pool_stats_embed, '1 d -> b d', b = crossover_mask_input.shape[0])
+
+        crossover_mask_input = cat((crossover_mask_input, repeated_pool_stats_embed), dim = -1)
+
+        pred_crossover_mask = self.pred_crossover_mask(crossover_mask_input) > 0.5
+
+        mutation_rate = pred_mutation_rate_bins.argmax(dim = -1).float() / self.mutation_rate_bins
 
         return dict(
             crossover_mask = pred_crossover_mask,
-            mutation_rate = pred_mutate_rate
+            mutation_rate = mutation_rate * self.max_mutation_rate
         )
 
 # quick test
 
 if __name__ == '__main__':
 
-    toy = ToyGeneticAlgorithmEnv()
+    trials = 10
+    petri_dish = ToyGeneticAlgorithmEnv().cuda()
 
-    transformer = Encoder(dim = 32, depth = 2)
+    human = EvolutionDirector(
+        petri_dish.gene_length,
+        dict(
+            dim = 64,
+            depth = 2,
+            attn_dim_head = 64,
+            heads = 4,
+        )
+    ).cuda()
 
-    god = EvolutionDirector(toy.gene_length, transformer)
+    results_without_intervention = petri_dish.run(trials)
+    results_with_intervention = petri_dish.run(trials, intervener = human)
 
-    gen = toy.to_environment_generator()
-
-    state = next(gen)
-
-    done = False
-
-    while not done:
-        actions = god(state)
-
-        state, _, done = gen.send(actions)
+    assert results_without_intervention.shape == results_with_intervention.shape
