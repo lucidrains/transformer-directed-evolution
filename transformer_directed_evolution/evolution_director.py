@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from torch import nn, tensor, cat
+from torch import nn, tensor, cat, stack
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 
@@ -36,7 +36,8 @@ class ToyGeneticAlgorithmEnv(Module):
         mutation_rate = 0.05,
         frac_fittest_survive = 0.25,
         frac_tournament = 0.25,
-        display = False
+        display = False,
+        max_steps = 500
     ):  
         super().__init__()
 
@@ -60,6 +61,7 @@ class ToyGeneticAlgorithmEnv(Module):
         self.population_size = population_size
 
         self.display = display
+        self.max_steps = max_steps
 
         self.register_buffer('target_gene', target_gene)
 
@@ -77,7 +79,7 @@ class ToyGeneticAlgorithmEnv(Module):
         self.register_buffer('done', tensor(False, device = self.device))
 
     def encode(self, s):
-        return torch.tensor([ord(c) for c in s])
+        return tensor([ord(c) for c in s])
 
     def decode(self, t):
         return ''.join([chr(i) for i in t.tolist()])
@@ -103,9 +105,10 @@ class ToyGeneticAlgorithmEnv(Module):
     ):
         display = default(display, self.display)
 
+        max_fitnesses = []
         generation_completed_at = []
 
-        for _ in tqdm(range(num_trials)):
+        for _ in tqdm(range(num_trials), desc = 'trial'):
             self.reset()
 
             gen = self.to_environment_generator()
@@ -114,7 +117,9 @@ class ToyGeneticAlgorithmEnv(Module):
 
             done = False
 
-            while not done:
+            step = 0
+
+            while not done and step < self.max_steps:
 
                 actions = dict(display = display)
 
@@ -122,11 +127,17 @@ class ToyGeneticAlgorithmEnv(Module):
                     intervention_actions = intervener(state, parent_ids)
                     actions.update(**intervention_actions)
 
-                state, parent_ids, _, done = gen.send(actions)
+                state, parent_ids, fitnesses, done = gen.send(actions)
+
+                step += 1
 
             generation_completed_at.append(self.generation.item())
+            max_fitnesses.append(fitnesses.amax())
 
-        return tensor(generation_completed_at, device = self.device)
+        completed_at = tensor(generation_completed_at, device = self.device)
+        max_fitnesses = stack(max_fitnesses)
+
+        return completed_at, max_fitnesses
 
     def forward(
         self,
@@ -249,7 +260,7 @@ class EvolutionDirector(Module):
         )
 
         self.pred_mutation = nn.Sequential(
-            nn.Linear(dim, mutation_rate_bins, bias = False),  # predict either -1, 0., 1. (binary encoding)
+            nn.Linear(dim, mutation_rate_bins, bias = False),
             nn.Softmax(dim = -1)
         )
 
@@ -348,7 +359,7 @@ class EvolutionDirector(Module):
 
 if __name__ == '__main__':
 
-    trials = 10
+    trials = 5
     petri_dish = ToyGeneticAlgorithmEnv().cuda()
 
     human = EvolutionDirector(
@@ -361,7 +372,7 @@ if __name__ == '__main__':
         )
     ).cuda()
 
-    results_without_intervention = petri_dish.run(trials)
-    results_with_intervention = petri_dish.run(trials, intervener = human)
+    results_without_intervention, _ = petri_dish.run(trials)
+    results_with_intervention, _ = petri_dish.run(trials, intervener = human)
 
     assert results_without_intervention.shape == results_with_intervention.shape
