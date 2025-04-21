@@ -71,6 +71,16 @@ class ToyGeneticAlgorithmEnv(Module):
     def device(self):
         return self.target_gene.device
 
+    @property
+    def diversity(self):
+
+        pool = self.gene_pool
+        pool_size = pool.shape[-2]
+        num_pairs = (pool_size * pool_size) / 2 - pool_size
+        distances = torch.cdist(pool.float(), pool.float())
+
+        return distances.tril(-1).sum() / num_pairs
+
     def reset(self):
         self.register_buffer('initted', tensor(False, device = self.device))
         self.register_buffer('generation', tensor(0, device = self.device))
@@ -94,7 +104,7 @@ class ToyGeneticAlgorithmEnv(Module):
 
             done, fitnesses = self.forward(**actions)
 
-            actions = yield self.gene_pool, self.parent_ids, fitnesses, done
+            actions = yield self.gene_pool, self.parent_ids, fitnesses, self.diversity, done
 
     def run(
         self,
@@ -127,11 +137,12 @@ class ToyGeneticAlgorithmEnv(Module):
                     intervention_actions = intervener(state, parent_ids)
                     actions.update(**intervention_actions)
 
-                state, parent_ids, fitnesses, done = gen.send(actions)
+                state, parent_ids, fitnesses, diversity, done = gen.send(actions)
 
                 step += 1
 
             generation_completed_at.append(self.generation.item())
+
             max_fitnesses.append(fitnesses.amax())
 
         completed_at = tensor(generation_completed_at, device = self.device)
@@ -249,9 +260,16 @@ class EvolutionDirector(Module):
 
         self.proj_genome_to_model = nn.Linear(dim_genome, dim)
 
+        # shared stem
+
         self.transformer = transformer
 
         self.pool = Reduce('b n d -> b d', 'mean')
+
+        # actor head
+
+        self.mutation_rate_bins = mutation_rate_bins
+        self.max_mutation_rate = max_mutation_rate
 
         self.pred_interfere_mutation = nn.Sequential(
             nn.Linear(dim_genome + dim, 1, bias = False),
@@ -264,9 +282,6 @@ class EvolutionDirector(Module):
             nn.Softmax(dim = -1)
         )
 
-        self.mutation_rate_bins = mutation_rate_bins
-        self.max_mutation_rate = max_mutation_rate
-
         self.pred_interfere_crossover = nn.Sequential(
             Rearrange('parents ... d -> ... (parents d)'),
             nn.Linear(2 * dim_genome + dim, 1, bias = False),
@@ -278,6 +293,8 @@ class EvolutionDirector(Module):
             nn.Linear(2 * dim_genome + dim, dim_genome, bias = False),
             nn.Sigmoid()
         )
+
+        # critic head
 
         self.pred_value = nn.Sequential(
             Rearrange('parents ... d -> ... (parents d)'),
