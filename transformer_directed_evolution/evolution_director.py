@@ -344,7 +344,11 @@ class EvolutionDirector(Module):
         advantages,
         eps_clip = 0.2,
         entropy_weight = .01,
+        norm_eps = 1e-5
     ):
+        batch = advantages.shape[0]
+        advantages = F.layer_norm(advantages, (batch,), eps = norm_eps)
+
         log_probs = logits.gather(-1, actions)
 
         ratio = (log_probs - old_log_probs).exp()
@@ -402,7 +406,7 @@ class EvolutionDirector(Module):
 if __name__ == '__main__':
 
     trials = 5
-    petri_dish = ToyGeneticAlgorithmEnv().cuda()
+    petri_dish = ToyGeneticAlgorithmEnv()
 
     human = EvolutionDirector(
         petri_dish.gene_length,
@@ -412,7 +416,7 @@ if __name__ == '__main__':
             attn_dim_head = 64,
             heads = 4,
         )
-    ).cuda()
+    )
 
     results_without_intervention, _ = petri_dish.run(trials)
     results_with_intervention, _ = petri_dish.run(trials, intervener = human)
