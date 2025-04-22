@@ -14,6 +14,8 @@ from evolutionary_policy_optimization import LatentGenePool
 
 from tqdm import tqdm
 
+from assoc_scan import AssocScan
+
 # helper functions
 
 def exists(v):
@@ -24,6 +26,29 @@ def default(v, d):
 
 def log(t, eps = 1e-20):
     return t.clamp(min = eps).log()
+
+# gen advantage estimate
+
+def calc_generalized_advantage_estimate(
+    rewards,
+    values,
+    masks,
+    gamma = 0.99,
+    lam = 0.95,
+    use_accelerated = None
+):
+    use_accelerated = default(use_accelerated, rewards.is_cuda)
+    device = rewards.device
+
+    values = F.pad(values, (0, 1), value = 0.)
+    values, values_next = values[:-1], values[1:]
+
+    delta = rewards + gamma * values_next * masks - values
+    gates = gamma * lam * masks
+
+    scan = AssocScan(reverse = True, use_accelerated = use_accelerated)
+
+    return scan(gates, delta)
 
 # the environment, which in this case, is a petri dish running genetic algorithm
 # start with the most basic toy task before going for TSP
