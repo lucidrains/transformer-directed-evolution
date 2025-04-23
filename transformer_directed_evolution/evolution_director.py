@@ -120,7 +120,7 @@ class ToyGeneticAlgorithmEnv(Module):
         return ''.join([chr(i) for i in t.tolist()])
 
     def to_environment_generator(self):
-        actions = yield self.gene_pool, self.parent_ids
+        actions = yield self.gene_pool, self.parent_ids, None
 
         done = self.done.item()
 
@@ -131,13 +131,18 @@ class ToyGeneticAlgorithmEnv(Module):
 
             actions = yield self.gene_pool, self.parent_ids, fitnesses, self.diversity, done
 
+    @torch.no_grad()
     def run(
         self,
         num_trials = 1,
         *,
-        intervener: EvolutionDirector | None = None,
-        display = None
+        director: EvolutionDirector | None = None,
+        display = None,
+        pass_fitness_to_director = False
     ):
+        if exists(director):
+            director.eval()
+
         display = default(display, self.display)
 
         max_fitnesses = []
@@ -148,7 +153,7 @@ class ToyGeneticAlgorithmEnv(Module):
 
             gen = self.to_environment_generator()
 
-            state, parent_ids = next(gen)
+            state, parent_ids, fitnesses = next(gen)
 
             done = False
 
@@ -158,8 +163,13 @@ class ToyGeneticAlgorithmEnv(Module):
 
                 actions = dict(display = display)
 
-                if exists(intervener):
-                    intervention_actions = intervener(state, parent_ids)
+                if exists(director):
+                    maybe_fitness_kwargs = dict()
+
+                    if pass_fitness_to_director:
+                        maybe_fitness_kwargs.update(fitnesses = fitnesses)
+
+                    intervention_actions = director(state, parent_ids, **maybe_fitness_kwargs)
                     actions.update(**intervention_actions)
 
                 state, parent_ids, fitnesses, diversity, done = gen.send(actions)
@@ -285,6 +295,13 @@ class EvolutionDirector(Module):
 
         self.proj_genome_to_model = nn.Linear(dim_genome, dim)
 
+        self.to_fitness_embed = nn.Sequential(
+            Rearrange('... -> ... 1'),
+            nn.Linear(1, dim // 2),
+            nn.SiLU(),
+            nn.Linear(dim // 2, dim),
+        )
+
         # shared stem
 
         self.transformer = transformer
@@ -371,12 +388,17 @@ class EvolutionDirector(Module):
     def forward(
         self,
         genome_pool,
-        parent_ids
+        parent_ids,
+        fitnesses = None
     ):
         parents = genome_pool[parent_ids]
         genome_pool = rearrange(genome_pool, '... -> 1 ...')
 
         tokens = self.proj_genome_to_model(genome_pool.float())
+
+        if exists(fitnesses):
+            fitness_tokens = self.to_fitness_embed(fitnesses)
+            tokens = tokens + fitness_tokens
 
         attended_population = self.transformer(tokens)
 
@@ -419,6 +441,6 @@ if __name__ == '__main__':
     )
 
     results_without_intervention, _ = petri_dish.run(trials)
-    results_with_intervention, _ = petri_dish.run(trials, intervener = human)
+    results_with_intervention, _ = petri_dish.run(trials, director = human, pass_fitness_to_director = True)
 
     assert results_without_intervention.shape == results_with_intervention.shape
