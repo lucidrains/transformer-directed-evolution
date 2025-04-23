@@ -27,6 +27,9 @@ def default(v, d):
 def log(t, eps = 1e-20):
     return t.clamp(min = eps).log()
 
+def gumbel_noise(t):
+    return -log(log(torch.rand_like(t)))
+
 # gen advantage estimate
 
 def calc_generalized_advantage_estimate(
@@ -313,6 +316,11 @@ class EvolutionDirector(Module):
         self.mutation_rate_bins = mutation_rate_bins
         self.max_mutation_rate = max_mutation_rate
 
+        self.pred_selection_operator = nn.Sequential(
+            nn.Linear(dim, 1, bias = False),
+            Rearrange('... 2 -> ...'),
+        )
+
         self.pred_interfere_mutation = nn.Sequential(
             nn.Linear(dim_genome + dim, 1, bias = False),
             Rearrange('... 1 -> ...'),
@@ -389,7 +397,9 @@ class EvolutionDirector(Module):
         self,
         genome_pool,
         parent_ids,
-        fitnesses = None
+        fitnesses = None,
+        pred_selection_operator = False,
+        natural_selection_size = None
     ):
         parents = genome_pool[parent_ids]
         genome_pool = rearrange(genome_pool, '... -> 1 ...')
@@ -418,10 +428,29 @@ class EvolutionDirector(Module):
 
         mutation_rate = pred_mutation_rate_bins.argmax(dim = -1).float() / self.mutation_rate_bins
 
-        return dict(
+        actions = dict(
             crossover_mask = pred_crossover_mask,
             mutation_rate = mutation_rate * self.max_mutation_rate
         )
+
+        if pred_selection_operator:
+            assert exists(natural_selection_size)
+
+            mean, variance = self.pred_selection_operator(attended_population).unbind(dim = -1)
+
+            variance = F.softplus(variance)
+
+            selection_logits = torch.normal(mean, variance)
+
+            noised_logits = selection_logits + gumbel_noise(selection_logits)
+
+            sel_indices = noised_logits.topk(natural_selection_size, dim = -1).indices
+
+            selection_mask = torch.zeros_like(noised_logits).scatter(-1, sel_indices, True)
+
+            actions.update(selection_mask = selection_mask)
+
+        return actions
 
 # quick test
 
