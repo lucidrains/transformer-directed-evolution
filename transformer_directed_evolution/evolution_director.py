@@ -285,7 +285,9 @@ class EvolutionDirector(Module):
         dim_genome,
         transformer: Encoder | dict,
         mutation_rate_bins = 25,
-        max_mutation_rate = 0.2
+        max_mutation_rate = 0.2,
+        critic_fitness_weight = 1.,
+        critic_diversity_weight = 0.5,
     ):
         """
         👋, if you are watching
@@ -348,9 +350,12 @@ class EvolutionDirector(Module):
 
         # critic head
 
+        self.critic_fitness_weight = critic_fitness_weight
+        self.critic_diversity_weight = critic_diversity_weight
+
         self.pred_value = nn.Sequential(
             Rearrange('parents ... d -> ... (parents d)'),
-            nn.Linear(2 * dim_genome + dim, 1, bias = False),
+            nn.Linear(2 * dim_genome + dim, 2, bias = False),
             Rearrange('... 1 -> ...')
         )
 
@@ -373,8 +378,11 @@ class EvolutionDirector(Module):
         entropy_weight = .01,
         norm_eps = 1e-5
     ):
-        batch = advantages.shape[0]
+        batch = advantages.shape[-1]
         advantages = F.layer_norm(advantages, (batch,), eps = norm_eps)
+
+        fitness_advantage, diversity_advantage = advantages
+        weighted_advantages = fitness_advantage * self.critic_fitness_weight + diversity_advantage * self.critic_diversity_weight
 
         log_probs = logits.gather(-1, actions)
 
@@ -384,7 +392,7 @@ class EvolutionDirector(Module):
 
         clipped_ratio = ratio.clamp(min = 1. - eps_clip, max = 1. + eps_clip)
 
-        actor_loss = -torch.min(clipped_ratio * advantages, ratio * advantages)
+        actor_loss = -torch.min(clipped_ratio * weighted_advantages, ratio * weighted_advantages)
 
         # add entropy loss for exploration
 
