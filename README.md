@@ -25,3 +25,13 @@ Explorations into whether a transformer with RL can direct a genetic algorithm t
     url     = {https://openreview.net/forum?id=rJvY_5OzoI}
 }
 ```
+
+```bibtex
+@article{ShemTov2024DeepNC,
+    title  = {Deep Neural Crossover: A Multi-Parent Operator That Leverages Gene Correlations},
+    author = {Eliad Shem-Tov and Achiya Elyasaf},
+    journal = {Proceedings of the Genetic and Evolutionary Computation Conference},
+    year   = {2024},
+    url    = {https://api.semanticscholar.org/CorpusID:268512900}
+}
+```
