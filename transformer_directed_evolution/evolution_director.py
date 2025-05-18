@@ -322,7 +322,7 @@ class EvolutionDirector(Module):
 
         self.pred_selection_operator = nn.Sequential(
             nn.Linear(dim, 1, bias = False),
-            Rearrange('... 2 -> ...'),
+            Rearrange('... 1 -> ...'),
         )
 
         self.pred_interfere_mutation = nn.Sequential(
@@ -446,9 +446,9 @@ class EvolutionDirector(Module):
         if pred_selection_operator:
             assert exists(natural_selection_size)
 
-            mean, variance = self.pred_selection_operator(attended_population).unbind(dim = -1)
+            mean, log_variance = self.pred_selection_operator(attended_population).unbind(dim = -1)
 
-            variance = F.softplus(variance)
+            variance = log_variance.exp()
 
             selection_logits = torch.normal(mean, variance)
 

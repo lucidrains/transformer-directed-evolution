@@ -1,6 +1,6 @@
 [project]
 name = "transformer-directed-evolution"
-version = "0.0.2"
+version = "0.0.3"
 description = "Directed Evolution with Transformer"
 authors = [
     { name = "Phil Wang", email = "lucidrains@gmail.com" }
