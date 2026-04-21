@@ -35,3 +35,27 @@ Explorations into whether a transformer with RL can direct a genetic algorithm t
     url    = {https://api.semanticscholar.org/CorpusID:268512900}
 }
 ```
+
+```bibtex
+@misc{gutiérrezvalencia2021genomicarchitectureevolutionaryfates,
+    title   = {The genomic architecture and evolutionary fates of supergenes},
+    author  = {Juanita Gutiérrez-Valencia and William Hughes and Emma L. Berdan and Tanja Slotte},
+    year    = {2021},
+    eprint  = {2012.11508},
+    archivePrefix = {arXiv},
+    primaryClass = {q-bio.PE},
+    url     = {https://arxiv.org/abs/2012.11508},
+}
+```
+
+```bibtex
+@article{monroe2022mutation,
+    title   = {Mutation bias reflects natural selection in \textit{Arabidopsis thaliana}},
+    author  = {Monroe, J. Grey and Srikant, Thanvi and Carbonell-Bejerano, Pablo and Becker, Claude and Lensink, Mariele and Exposito-Alonso, Moises and Klein, Marie and Hildebrandt, Julia and Neumann, Manuela and Kliebenstein, Daniel and Weng, Mao-Lun and Imbert, Eric and {\AA}gren, Jon and Rutter, Matthew T. and Fenster, Charles B. and Weigel, Detlef},
+    journal = {Nature},
+    year    = {2022},
+    publisher = {Nature Publishing Group},
+    doi     = {10.1038/s41586-021-04269-6},
+    url     = {https://www.nature.com/articles/s41586-021-04269-6}
+}
+```

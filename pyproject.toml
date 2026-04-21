@@ -23,7 +23,7 @@ classifiers=[
     'Programming Language :: Python :: 3.9',
 ]
 
-dependencies = [    
+dependencies = [
     "assoc-scan>=0.0.2",
     "einops>=0.8.0",
     "evolutionary-policy-optimization>=0.0.29",

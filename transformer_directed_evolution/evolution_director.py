@@ -68,7 +68,7 @@ class ToyGeneticAlgorithmEnv(Module):
         frac_tournament = 0.25,
         display = False,
         max_steps = 500
-    ):  
+    ):
         super().__init__()
 
         gene_length = len(goal)
