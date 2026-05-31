@@ -78,6 +78,9 @@ class PlackettLuce(Distribution):
         log_denom = torch.logsumexp(masked_logits, dim = -1)
         return reduce(log_num - log_denom, '... k -> ...', 'sum')
 
+    def entropy(self):
+        return -self.log_prob(self.sample())
+
 # gen advantage estimate
 
 def calc_generalized_advantage_estimate(
@@ -425,12 +428,9 @@ class EvolutionDirector(Module):
         surrogate_loss = -torch.min(clipped_ratio * weighted_advantages, ratio * weighted_advantages)
 
         # add entropy loss for exploration
-        try:
-            entropy = dist.entropy()
-            if entropy.ndim > weighted_advantages.ndim:
-                entropy = reduce(entropy, '... e -> ...', 'sum')
-        except NotImplementedError:
-            entropy = 0.
+        entropy = dist.entropy()
+        if entropy.ndim > weighted_advantages.ndim:
+            entropy = reduce(entropy, '... e -> ...', 'sum')
 
         return (surrogate_loss - entropy_weight * entropy).mean()
 
