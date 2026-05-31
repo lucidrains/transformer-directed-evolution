@@ -6,8 +6,9 @@ import torch
 from torch import nn, tensor, cat, stack
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
+from torch.distributions import Distribution, Categorical, Bernoulli
 
-from einops import rearrange, repeat
+from einops import rearrange, repeat, reduce, einsum
 from einops.layers.torch import Rearrange, Reduce
 
 from x_transformers import Encoder
@@ -30,7 +31,52 @@ def log(t, eps = 1e-20):
     return t.clamp(min = eps).log()
 
 def gumbel_noise(t):
-    return -log(log(torch.rand_like(t)))
+    noise = torch.rand_like(t)
+    return -log(-log(noise))
+
+# plackett luce distribution
+
+class PlackettLuce(Distribution):
+    arg_constraints = dict(
+        logits = torch.distributions.constraints.real
+    )
+
+    def __init__(self, logits, validate_args = None):
+        self.logits = logits
+        super().__init__(
+            batch_shape = logits.shape[:-1],
+            event_shape = torch.Size(),
+            validate_args = validate_args
+        )
+
+    def sample(self, sample_shape = torch.Size()):
+        logits = self.logits
+
+        for s in reversed(sample_shape):
+            logits = repeat(logits, '... -> s ...', s = s)
+
+        return (logits + gumbel_noise(logits)).argsort(dim = -1, descending = True)
+
+    def log_prob(self, value):
+        device = value.device
+        k, n = value.shape[-1], self.logits.shape[-1]
+
+        logits = self.logits
+        if logits.ndim < value.ndim:
+            logits = logits.expand(*value.shape[:-1], -1)
+
+        log_num = logits.gather(-1, value)
+
+        one_hot = F.one_hot(value, num_classes = n).float()
+
+        tril = torch.tril(torch.ones(k, k, device = device), diagonal = -1)
+        mask = einsum(tril, one_hot, 'i j, ... j n -> ... i n')
+
+        logits = rearrange(self.logits, '... n -> ... 1 n')
+        masked_logits = logits.masked_fill(mask.bool(), float('-inf'))
+
+        log_denom = torch.logsumexp(masked_logits, dim = -1)
+        return reduce(log_num - log_denom, '... k -> ...', 'sum')
 
 # gen advantage estimate
 
@@ -103,7 +149,6 @@ class ToyGeneticAlgorithmEnv(Module):
 
     @property
     def diversity(self):
-
         pool = self.gene_pool
         pool_size = pool.shape[-2]
         num_pairs = (pool_size * pool_size) / 2 - pool_size
@@ -169,13 +214,8 @@ class ToyGeneticAlgorithmEnv(Module):
                 actions = dict(display = display)
 
                 if exists(director):
-                    maybe_fitness_kwargs = dict()
-
-                    if pass_fitness_to_director:
-                        maybe_fitness_kwargs.update(fitnesses = fitnesses)
-
-                    intervention_actions = director(state, parent_ids, **maybe_fitness_kwargs)
-                    actions.update(**intervention_actions)
+                    kwargs = dict(fitnesses = fitnesses) if pass_fitness_to_director else {}
+                    actions.update(director(state, parent_ids, **kwargs))
 
                 state, parent_ids, fitnesses, diversity, done = gen.send(actions)
 
@@ -210,7 +250,6 @@ class ToyGeneticAlgorithmEnv(Module):
             parents = pool[self.parent_ids]
 
             # cross over recombination of parents
-
             parent1, parent2 = parents.unbind(dim = 1)
 
             if not exists(crossover_mask):
@@ -221,7 +260,6 @@ class ToyGeneticAlgorithmEnv(Module):
             pool = torch.cat((pool, children))
 
             # mutate genes in population
-
             num_mutate = self.num_mutate
 
             if exists(mutation_rate):
@@ -239,8 +277,8 @@ class ToyGeneticAlgorithmEnv(Module):
             self.generation.add_(1)
 
         # sort population by fitness
-
-        fitnesses = 1. / torch.square(pool - self.target_gene).sum(dim = -1)
+        diff = pool - self.target_gene
+        fitnesses = 1. / einsum(diff, diff, '... d, ... d -> ...').clamp(min = 1e-10)
 
         indices = fitnesses.sort(descending = True).indices
         pool, fitnesses = pool[indices], fitnesses[indices]
@@ -328,25 +366,17 @@ class EvolutionDirector(Module):
         self.pred_interfere_mutation = nn.Sequential(
             nn.Linear(dim_genome + dim, 1, bias = False),
             Rearrange('... 1 -> ...'),
-            nn.Sigmoid()
         )
 
-        self.pred_mutation = nn.Sequential(
-            nn.Linear(dim, mutation_rate_bins, bias = False),
-            nn.Softmax(dim = -1)
-        )
+        self.pred_mutation = nn.Linear(dim, mutation_rate_bins, bias = False)
 
         self.pred_interfere_crossover = nn.Sequential(
             Rearrange('parents ... d -> ... (parents d)'),
             nn.Linear(2 * dim_genome + dim, 1, bias = False),
             Rearrange('... 1 -> ...'),
-            nn.Sigmoid()
         )
 
-        self.pred_crossover_mask = nn.Sequential(
-            nn.Linear(2 * dim_genome + dim, dim_genome, bias = False),
-            nn.Sigmoid()
-        )
+        self.pred_crossover_mask = nn.Linear(2 * dim_genome + dim, dim_genome, bias = False)
 
         # critic head
 
@@ -370,38 +400,39 @@ class EvolutionDirector(Module):
 
     def actor_loss(
         self,
-        logits,
-        old_log_probs,
+        dist: Distribution,
         actions,
+        old_log_probs,
         advantages,
         eps_clip = 0.2,
         entropy_weight = .01,
         norm_eps = 1e-5
     ):
-        batch = advantages.shape[-1]
-        advantages = F.layer_norm(advantages, (batch,), eps = norm_eps)
+        advantages = F.layer_norm(advantages, advantages.shape[-1:], eps = norm_eps)
 
-        fitness_advantage, diversity_advantage = advantages
+        fitness_advantage, diversity_advantage = advantages.unbind(dim = 0)
         weighted_advantages = fitness_advantage * self.critic_fitness_weight + diversity_advantage * self.critic_diversity_weight
 
-        log_probs = logits.gather(-1, actions)
+        log_probs = dist.log_prob(actions)
+
+        if log_probs.ndim > weighted_advantages.ndim:
+            log_probs = reduce(log_probs, '... e -> ...', 'sum')
 
         ratio = (log_probs - old_log_probs).exp()
 
         # classic clipped surrogate loss from ppo
-
         clipped_ratio = ratio.clamp(min = 1. - eps_clip, max = 1. + eps_clip)
-
-        actor_loss = -torch.min(clipped_ratio * weighted_advantages, ratio * weighted_advantages)
+        surrogate_loss = -torch.min(clipped_ratio * weighted_advantages, ratio * weighted_advantages)
 
         # add entropy loss for exploration
+        try:
+            entropy = dist.entropy()
+            if entropy.ndim > weighted_advantages.ndim:
+                entropy = reduce(entropy, '... e -> ...', 'sum')
+        except NotImplementedError:
+            entropy = 0.
 
-        prob = logits.softmax(dim = -1)
-        entropy = -(prob * log(prob)).sum(dim = -1)
-
-        entropy_aux_loss = -entropy_weight * entropy
-
-        return (actor_loss + entropy_aux_loss).mean()
+        return (surrogate_loss - entropy_weight * entropy).mean()
 
     def forward(
         self,
@@ -409,7 +440,8 @@ class EvolutionDirector(Module):
         parent_ids,
         fitnesses = None,
         pred_selection_operator = False,
-        natural_selection_size = None
+        natural_selection_size = None,
+        return_distributions = False
     ):
         parents = genome_pool[parent_ids]
         genome_pool = rearrange(genome_pool, '... -> 1 ...')
@@ -424,41 +456,49 @@ class EvolutionDirector(Module):
 
         pool_stats_embed = self.pool(attended_population)
 
-        # concat the pooled embed for the evolution director to make a decision on crossover mask or mutation
+        # mutation rate
+        mutation_rate_logits = self.pred_mutation(pool_stats_embed)
+        mutation_rate_dist = Categorical(logits = mutation_rate_logits)
+        mutation_rate = (mutation_rate_dist.sample().float() / self.mutation_rate_bins) * self.max_mutation_rate
 
-        pred_mutation_rate_bins = self.pred_mutation(pool_stats_embed)
+        # crossover mask
+        crossover_mask_input = cat((
+            rearrange(parents, 'b parents d -> b (parents d)'),
+            repeat(pool_stats_embed, '1 d -> b d', b = parents.shape[0])
+        ), dim = -1)
 
-        crossover_mask_input = rearrange(parents, 'b parents d -> b (parents d)')
+        crossover_mask_logits = self.pred_crossover_mask(crossover_mask_input)
+        crossover_mask_dist = Bernoulli(logits = crossover_mask_logits)
 
-        repeated_pool_stats_embed = repeat(pool_stats_embed, '1 d -> b d', b = crossover_mask_input.shape[0])
-
-        crossover_mask_input = cat((crossover_mask_input, repeated_pool_stats_embed), dim = -1)
-
-        pred_crossover_mask = self.pred_crossover_mask(crossover_mask_input) > 0.5
-
-        mutation_rate = pred_mutation_rate_bins.argmax(dim = -1).float() / self.mutation_rate_bins
+        crossover_mask = crossover_mask_dist.sample().bool()
 
         actions = dict(
-            crossover_mask = pred_crossover_mask,
-            mutation_rate = mutation_rate * self.max_mutation_rate
+            crossover_mask = crossover_mask,
+            mutation_rate = mutation_rate
         )
+
+        if return_distributions:
+            actions.update(
+                crossover_mask_dist = crossover_mask_dist,
+                mutation_rate_dist = mutation_rate_dist
+            )
 
         if pred_selection_operator:
             assert exists(natural_selection_size)
 
-            mean, log_variance = self.pred_selection_operator(attended_population).unbind(dim = -1)
+            selection_logits = self.pred_selection_operator(attended_population)
+            plackett_luce = PlackettLuce(logits = selection_logits)
 
-            variance = log_variance.exp()
+            sel_indices = plackett_luce.sample()[..., :natural_selection_size]
+            selection_mask = torch.zeros_like(selection_logits).scatter(-1, sel_indices, True)
 
-            selection_logits = torch.normal(mean, variance)
+            actions.update(
+                selection_mask = selection_mask,
+                selection_indices = sel_indices,
+            )
 
-            noised_logits = selection_logits + gumbel_noise(selection_logits)
-
-            sel_indices = noised_logits.topk(natural_selection_size, dim = -1).indices
-
-            selection_mask = torch.zeros_like(noised_logits).scatter(-1, sel_indices, True)
-
-            actions.update(selection_mask = selection_mask)
+            if return_distributions:
+                actions.update(plackett_luce_dist = plackett_luce)
 
         return actions
 

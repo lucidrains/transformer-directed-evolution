@@ -61,5 +61,13 @@ dev-dependencies = []
 [tool.hatch.metadata]
 allow-direct-references = true
 
+[tool.hatch.build]
+include = [
+    "transformer_directed_evolution",
+    "pyproject.toml",
+    "README.md",
+    "LICENSE"
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["transformer_directed_evolution"]
